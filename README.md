@@ -7,8 +7,7 @@ organised into two primary components:
 * `dro_alg2/` – the main ASCDRO implementation (formerly `dro_new`).  It
   contains core algorithms, models, datasets, and training scripts used across
   experiments.
-* `imagenet/` – scripts and manifests specific to the ImageNet-LT experiments
-  that are built on top of the ASCDRO stack.
+
 
 
 ## Repository Layout
@@ -23,8 +22,7 @@ organised into two primary components:
 | `dro_alg2/training/train_cifar10_st_ascdro.py` | CIFAR10-ST ASCDRO training entry point. |
 | `dro_alg2/scripts/run_cifar10_st_ascdro.sh` | Bash wrapper for CIFAR10-ST training. |
 | `dro_alg2/scripts/run_cifar10_st_experiment.sh` | Convenience launcher for ε sweeps on CIFAR10-ST. |
-| `imagenet/train_imagenet_lt.py` | ASCDRO/DSDRO training script for the long-tailed ImageNet-LT subset. |
-| `imagenet/ImageNet_LT/*.txt` | Long-tailed manifest files generated via `prepare_imagenet_lt.py`. |
+
 
 
 ## Running Training
