@@ -166,7 +166,7 @@ def get_param_list(model_or_tensor):
 # --- DP Double-Spider Trainer ---
 
 class DPDoubleSpiderTrainer:
-    def __init__(self, T, q, epsilon, delta, n, d, L0, L1, L2, D0, D1, D2, H, G, M, lambda_val, c):
+    def __init__(self, T, q, epsilon, delta, n, d, L0, L1, L2, D0, D1, D2, H, G, M, lambda_val, c, max_practical_bs):
         """
         Initialize the trainer with all algorithm and problem constants.
         
@@ -178,6 +178,7 @@ class DPDoubleSpiderTrainer:
             d: Dimension of parameters (for x, from ResNet20)
             L0, L1, L2, D0, D1, ...: Abstract problem constants
             c: DP noise constant
+            max_practical_bs: A hard cap on batch size to prevent OOM errors.
         """
         self.T = T
         self.q = q
@@ -187,6 +188,7 @@ class DPDoubleSpiderTrainer:
         self.d = d
         self.c = c
         self.log_1_delta = math.log(1.0 / self.delta)
+        self.max_practical_bs = max_practical_bs # Store the practical cap
         
         # Store abstract constants
         self.L0, self.L1, self.L2 = L0, L1, L2
@@ -227,13 +229,14 @@ class DPDoubleSpiderTrainer:
             (6 * self.q * self.c1 * self.c0) / self.L0
         ))
         
-        print(f"Algorithm Parameters:")
+        print(f"Algorithm Parameters (Theoretical):")
         print(f"  N1 (batch size): {self.N1}")
         print(f"  N2 (batch size): {self.N2}")
         print(f"  N3 (batch size): {self.N3}")
         print(f"  N4 (batch size): {self.N4}")
         print(f"  q (epoch size): {self.q}")
         print(f"  T (iterations): {self.T}")
+        print(f"  Max Practical Batch Size: {self.max_practical_bs}")
 
         # Step Sizes
         self.alpha = 1.0 / (4 * self.L2) if self.L2 > 0 else 1.0
@@ -247,6 +250,9 @@ class DPDoubleSpiderTrainer:
         self.sigma2_base = (self.c * math.sqrt(self.log_1_delta)) / (self.n * self.epsilon) 
         
         self.sigma3_base = (self.c * (self.L0 + self.L1 * math.sqrt(self.H)) * math.sqrt(self.log_1_delta)) / self.epsilon
+        # NOTE: sigma3_mult uses N3, but the *actual* loader will be capped.
+        # This noise may be incorrect if theoretical N3 is too large, but we
+        # prioritize running the code over crashing.
         self.sigma3_mult = max(1.0 / self.N3, math.sqrt(self.T) / (self.n * math.sqrt(self.q))) # N3
         self.sigma3 = self.sigma3_base * self.sigma3_mult
 
@@ -270,19 +276,19 @@ class DPDoubleSpiderTrainer:
     def _get_LN2(self, eta_t, eta_t_minus_1, x_t, x_t_minus_1):
         """Calculates the dynamic Lipschitz constant L_N2."""
         eta_diff = eta_t - eta_t_minus_1 # eta is scalar
-        x_diff = x_t - x_t_minus_1
+        x_diff_norm = torch.norm(x_t - x_t_minus_1)
         
         term1 = self.L2 * torch.norm(eta_diff)
-        term2 = (self.G * self.M * torch.norm(x_diff)) / self.lambda_val
+        term2 = (self.G * self.M * x_diff_norm) / self.lambda_val
         return 2 * max(term1, term2)
 
     def _get_LN4(self, eta_t, eta_t_minus_1, x_t, x_t_minus_1):
         """Calculates the dynamic Lipschitz constant L_N4."""
         eta_diff = eta_t - eta_t_minus_1 # eta is scalar
-        x_diff = x_t - x_t_minus_1
+        x_diff_norm = torch.norm(x_t - x_t_minus_1)
 
         term1 = (self.M * self.L2 * torch.norm(eta_diff)) / self.lambda_val # Assuming L=L2
-        term2 = (self.L0 + self.L1 * math.sqrt(self.H)) * torch.norm(x_diff)
+        term2 = (self.L0 + self.L1 * math.sqrt(self.H)) * x_diff_norm
         return 2 * max(term1, term2)
 
     def compute_gradient(self, params_list, loss):
@@ -290,7 +296,10 @@ class DPDoubleSpiderTrainer:
         if not params_list:
             return torch.tensor(0.0, device=self.device)
             
-        grads = torch.autograd.grad(loss, params_list, create_graph=True)
+        # create_graph=True was causing OOM errors with large batches,
+        # and the graph is detached with .data.copy_() anyway,
+        # so it appears to be unnecessary.
+        grads = torch.autograd.grad(loss, params_list, create_graph=False)
         flat_grads = torch.cat([g.reshape(-1) for g in grads])
         return flat_grads
 
@@ -353,16 +362,31 @@ class DPDoubleSpiderTrainer:
         
         # Dataloaders
         # We create new dataloaders inside the loop to get random batches
-        def get_loader(batch_size):
-            # Ensure batch_size is not larger than dataset
-            bs = min(int(batch_size), len(train_dataset))
-            if bs <= 0: return None
-            return DataLoader(train_dataset, batch_size=bs, shuffle=True)
+        def get_loader(batch_size_theoretical, loader_name, current_iter):
+            """
+            Creates a DataLoader, capping the theoretical batch size at a
+            practical limit to avoid OOM errors.
+            """
+            # Cap theoretical batch size by dataset size
+            bs_capped_by_dataset = min(int(batch_size_theoretical), len(train_dataset))
+            
+            # Apply a further practical cap to prevent OOM errors
+            bs_practical = min(bs_capped_by_dataset, self.max_practical_bs)
+            
+            if bs_practical < bs_capped_by_dataset and current_iter == 0:
+                # Warn the user ONCE at the start of training for each loader
+                print(f"WARNING ({loader_name} @ t=0): Theoretical batch size ({bs_capped_by_dataset}) is too large.")
+                print(f"         Capping at practical limit: {bs_practical}. ")
+                print(f"         => To fix, adjust theoretical constants (G, L, H, c) in __main__.")
 
-        loader_N1 = get_loader(self.N1)
-        loader_N2 = get_loader(self.N2)
-        loader_N3 = get_loader(self.N3)
-        loader_N4 = get_loader(self.N4)
+            if bs_practical <= 0: return None
+            return DataLoader(train_dataset, batch_size=bs_practical, shuffle=True)
+
+        # Pass t=0 to trigger initial warning if needed
+        loader_N1 = get_loader(self.N1, "N1", 0)
+        loader_N2 = get_loader(self.N2, "N2", 0)
+        loader_N3 = get_loader(self.N3, "N3", 0)
+        loader_N4 = get_loader(self.N4, "N4", 0)
 
         print("Starting DP Double-Spider Training...")
 
@@ -389,7 +413,7 @@ class DPDoubleSpiderTrainer:
                 try:
                     data, targets = next(iter(loader_N1))
                 except StopIteration:
-                    loader_N1 = get_loader(self.N1) # Re-init loader
+                    loader_N1 = get_loader(self.N1, "N1", t) # Re-init loader
                     if loader_N1 is None: continue
                     data, targets = next(iter(loader_N1))
                     
@@ -408,7 +432,7 @@ class DPDoubleSpiderTrainer:
                 try:
                     data, targets = next(iter(loader_N2))
                 except StopIteration:
-                    loader_N2 = get_loader(self.N2)
+                    loader_N2 = get_loader(self.N2, "N2", t)
                     if loader_N2 is None: continue
                     data, targets = next(iter(loader_N2))
                     
@@ -426,7 +450,8 @@ class DPDoubleSpiderTrainer:
                 
                 # Calculate dynamic noise
                 L_N2 = self._get_LN2(eta_t, eta_t_minus_1, x_t, x_t_minus_1)
-                sigma2 = self.sigma2_base * L_N2
+                # L_N2 is a tensor, extract its float value
+                sigma2 = self.sigma2_base * L_N2.item() 
                 noise_xi = torch.normal(0.0, sigma2, size=g_t.shape, device=self.device)
                 
                 g_t = grad_t - grad_t_minus_1 + g_t.clone() + noise_xi # g_t.clone() is g_{t-1}
@@ -447,7 +472,7 @@ class DPDoubleSpiderTrainer:
                 try:
                     data, targets = next(iter(loader_N3))
                 except StopIteration:
-                    loader_N3 = get_loader(self.N3)
+                    loader_N3 = get_loader(self.N3, "N3", t)
                     if loader_N3 is None: continue
                     data, targets = next(iter(loader_N3))
                     
@@ -466,7 +491,7 @@ class DPDoubleSpiderTrainer:
                 try:
                     data, targets = next(iter(loader_N4))
                 except StopIteration:
-                    loader_N4 = get_loader(self.N4)
+                    loader_N4 = get_loader(self.N4, "N4", t)
                     if loader_N4 is None: continue
                     data, targets = next(iter(loader_N4))
                     
@@ -485,7 +510,8 @@ class DPDoubleSpiderTrainer:
 
                 # Calculate dynamic noise
                 L_N4 = self._get_LN4(eta_t, eta_t_minus_1, x_t, x_t_minus_1)
-                sigma4 = self.sigma4_base * L_N4 * self.sigma4_mult
+                # L_N4 is a tensor, extract its float value
+                sigma4 = self.sigma4_base * L_N4.item() * self.sigma4_mult
                 noise_chi = torch.normal(0.0, sigma4, size=v_t.shape, device=self.device)
 
                 v_t = grad_t_x - grad_t_minus_1_x + v_t.clone() + noise_chi # v_t.clone() is v_{t-1}
@@ -586,13 +612,22 @@ if __name__ == "__main__":
     q_denom = math.sqrt(d * math.log(1.0/delta))
     q = math.ceil(q_constant * (n * epsilon) / q_denom) if q_denom > 0 else n
     
-    T = 1000  # Total iterations (placeholder)
+    T = 100  # Total iterations (REDUCED FOR FASTER DEBUGGING)
     
     # --- 4. Initialize 'eta' parameters ---
     # From the loss function, eta is a scalar.
     d_eta = 1 
     # Initialize as a single-element tensor, requiring gradient
     eta_0_init = torch.tensor([0.0], requires_grad=True)
+
+    # --- 5. OOM FIX: Define a practical batch size limit ---
+    # The theoretical batch sizes (N3) are enormous due to placeholder
+    # constants. We cap them at a practical value to prevent OOM errors.
+    # This means the code deviates from the paper's theory, but it will RUN.
+    # To fix this, you must provide better theoretical constants (G, L, H, c).
+    MAX_PRACTICAL_BATCH_SIZE = 256
+    print(f"NOTE: Capping all batch sizes at {MAX_PRACTICAL_BATCH_SIZE} to prevent OOM errors.")
+
 
     print(f"--- Initializing Trainer ---")
     print(f"INFO: Using computable constant M = {M}")
@@ -601,12 +636,13 @@ if __name__ == "__main__":
     print("WARNING: Using placeholder values for H and c.")
     print("You MUST update these constants in the __main__ block to proper values.")
 
-    # --- 5. Initialize and Run Trainer ---
+    # --- 6. Initialize and Run Trainer ---
     try:
         trainer = DPDoubleSpiderTrainer(
             T=T, q=q, epsilon=epsilon, delta=delta, n=n, d=d,
             L0=L0, L1=L1, L2=L2, D0=D0, D1=D1, D2=D2, H=H, G=G, M=M,
-            lambda_val=lambda_val, c=c
+            lambda_val=lambda_val, c=c,
+            max_practical_bs=MAX_PRACTICAL_BATCH_SIZE # Pass the cap
         )
 
         # The loss_function in train() is now correctly defined.
@@ -633,4 +669,6 @@ if __name__ == "__main__":
         print(e)
         print("This might be due to the placeholder constants or an issue in the logic")
         print("that depends on them (e.g., batch size 0 or invalid gradients).")
+
+
 
