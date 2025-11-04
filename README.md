@@ -6,6 +6,11 @@ points.
 
 ## Code organisations
 
+- `Baseline/SGDA` & `Baseline/Diff`: baseline methods; pipelines and usage stay
+  the same as before.
+- `dro1_new/`: refreshed version of the original `dro1` project with
+  script-configurable hyper-parameters. Use this in place of the deprecated
+  `dro1/` directory, which is kept only for archival purposes.
 - `dro_alg2/`: current ASCDRO stack (formerly `dro_new`). Contains the
   production trainer, datasets, models, and training scripts used for the latest
   experiments.
