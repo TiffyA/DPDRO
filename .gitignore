@@ -1,0 +1,9 @@
+# Dataset artifacts (CIFAR-10 and related)
+CIFAR10/
+data/
+Baseline/SGDA/data/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+
