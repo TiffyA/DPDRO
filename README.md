@@ -14,33 +14,33 @@ All paths below are relative to the repo root (`/home/Arnold/Code`).
 - Extra packages for MIA: `numpy`, `scikit-learn`, `matplotlib`.
 - CIFAR-10 is downloaded automatically into `./data` on first use.
 
-## 一键跑全套：`run_all_projects.sh`
+## One-command runner: `run_all_projects.sh`
 
-位于仓库根目录，依次跑 Baseline/SGDA、Baseline/Diff、`dro1_new`、`dro2_new`，默认 `epsilon` 取 `5 10`，每个 `epsilon` 跑 5 次（随机种子自动生成），输出写到 `multi_results/`。
+Located at the repo root. It sequentially runs Baseline/SGDA, Baseline/Diff, `dro1_new`, and `dro2_new`. By default it sweeps `epsilon` over `5 10`, runs each setting 5 times (random seeds auto-generated), and writes outputs under `multi_results/`.
 
-### 用法
+### Usage
 
 ```bash
 bash run_all_projects.sh
 ```
 
-常用环境变量（可选）：
+Optional environment variables:
 
-- `EPS_LIST="0.2 0.5 1"`：覆盖默认的 epsilon 列表。
-- `REPEAT_COUNT=3`：每个 epsilon 重复次数。
-- `CIFAR_TORCH_ROOT=/path/to/data`：数据目录（默认 `Baseline/SGDA/data`）。
-- `RESULTS_DIR=/path/to/out`：结果根目录（默认 `multi_results/`）。
+- `EPS_LIST="0.2 0.5 1"` – override the epsilon list.
+- `REPEAT_COUNT=3` – number of repeats per epsilon.
+- `CIFAR_TORCH_ROOT=/path/to/data` – data root (default `Baseline/SGDA/data`).
+- `RESULTS_DIR=/path/to/out` – results root (default `multi_results/`).
 
-示例：
+Example:
 
 ```bash
 EPS_LIST="0.5 1 5" REPEAT_COUNT=3 RESULTS_DIR=/tmp/multi_out bash run_all_projects.sh
 ```
 
-生成内容：
+Outputs:
 
-- 每个算法/epsilon/run 的日志与输出文件夹，例如 `multi_results/dro2_new_eps5_run1/train.log`。
-- 汇总表 `multi_results/summary.txt`，包含各 epsilon 下四个算法的平均准确率（字段解析自各自日志/summary）。
+- Per-algorithm/epsilon/run folders and logs, e.g., `multi_results/dro2_new_eps5_run1/train.log`.
+- Aggregated `multi_results/summary.txt` with average accuracies per epsilon (parsed from each algorithm’s logs/summary).
 
 ## `dro1_new` – DP Double-SPIDER baseline
 
